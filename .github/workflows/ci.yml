@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [ zephyr-gcc-10 ]
+  pull_request:
+    branches: [ zephyr-gcc-10 ]
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: [ self-hosted, linux, x64, large ]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+        - arc-none-elf
+      # - arc64-none-elf
+        - arm-none-eabi
+        - aarch64-none-elf
+        - mips-none-elf
+        - nios2-none-elf
+        - riscv64-none-elf
+        - sparc-none-elf
+        - x86_64-none-elf
+        - xtensa-none-elf
+
+    steps:
+    - name: Print environment information
+      run: |
+        uname -a
+        df -h
+        gcc --version
+        ld --version
+        make --version
+        autoconf --version
+        automake --version
+        cmake --version
+        flex --version
+        bison --version
+
+    - name: Check out source code
+      uses: actions/checkout@v2
+      with:
+        path: src
+
+    - name: Create work directories
+      run: |
+        rm -rf binutils
+        mkdir binutils
+        rm -rf build
+        mkdir build
+        rm -rf ${{ matrix.target }}
+        mkdir ${{ matrix.target }}
+        rm -rf upload
+        mkdir upload
+
+    - name: Download binutils
+      run: |
+        cd binutils
+        wget https://github.com/Centrinix/zephyr-binutils/releases/download/test3/${{ matrix.target }}.tar.gz
+        tar xvf ${{ matrix.target }}.tar.gz
+        echo "${GITHUB_WORKSPACE}/binutils/${{ matrix.target }}/bin" >> $GITHUB_PATH
+
+    - name: Download prerequisites
+      working-directory: src
+      run: |
+        contrib/download_prerequisites
+
+    - name: Configure gcc
+      run: |
+        cd build
+        ../src/configure \
+          --prefix=/ \
+          --target=${{ matrix.target }} \
+          --without-headers \
+          --with-newlib \
+          --enable-threads=no \
+          --disable-shared \
+          --enable-__cxa_atexit \
+          --disable-libgomp \
+          --disable-libmudflap \
+          --disable-libmpx \
+          --disable-libssp \
+          --disable-libquadmath \
+          --disable-libquadmath-support \
+          --disable-libstdcxx \
+          --enable-lto \
+          --with-host-libstdcxx='-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm' \
+          --enable-target-optspace \
+          --disable-nls \
+          --enable-multiarch \
+          --enable-languages=c
+
+    - name: Build gcc
+      run: |
+        cd build
+        make -j16 all
+        make DESTDIR=${GITHUB_WORKSPACE}/${{ matrix.target }} install-strip
+
+    - name: Archive artifact
+      run: |
+        cd upload
+        tar -zcvf ${{ matrix.target }}.tar.gz --owner=0 --group=0 \
+            -C .. ${{ matrix.target }}
+
+    - name: Upload artifact
+      if: github.event_name != 'release'
+      uses: actions/upload-artifact@v2
+      with:
+        name: gcc_${{ matrix.target }}
+        path: upload/${{ matrix.target }}.tar.gz
+
+    - name: Upload release asset
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: upload/${{ matrix.target }}.tar.gz
+        asset_name: ${{ matrix.target }}.tar.gz
+        asset_content_type: application/octet-stream
